@@ -7,39 +7,31 @@ from datetime import datetime, timedelta
 from collections import deque
 
 # ---------------- Configuration ----------------
-SYMBOL = "TAOUSDT"  # Trading pair to monitor
+SYMBOL = "LTCUSDT"  # Trading pair to monitor
 ORDERBOOK_API_URL = "https://api.binance.com/api/v3/depth"
 FETCH_INTERVAL = 2       # seconds between API calls
 LOOKBACK_SECONDS = 30    # base window for the graph (in seconds)
-TABLE_RECORD_SIZE = 10   # number of cumulative records to keep in the table
+TABLE_RECORD_SIZE = 10   # number of records to keep in the table
 
-# For the HA-smoothed values, we want enough data points to yield at least 10 segments.
-# (Segments count = number of points - 1)
+# For the HA-smoothed values for cumulative imbalance
 HA_MAX_POINTS = 16       # This will allow up to 15 segments on the HA plot
 
-# ---------------- Global Variables for Heikin Ashi Smoothing ----------------
-# For cumulative imbalance (Heikin Ashi components)
+# ---------------- Global Variables for Cumulative Imbalance (Heikin Ashi) ----------------
 ha_imbalance_open = None
 ha_imbalance_close = None
-# For futures open interest (Heikin Ashi components)
-ha_oi_open = None
-ha_oi_close = None
-
-# Deques for plotting Heikin Ashi–smoothed values.
 ha_imbalance_values = deque(maxlen=HA_MAX_POINTS)
 ha_imbalance_times = deque(maxlen=HA_MAX_POINTS)
 imbalance_record = deque(maxlen=TABLE_RECORD_SIZE)  # For table display
 
-# For futures open interest (%)
+# ---------------- Global Variables for Open Interest (Raw Live Data) ----------------
 open_interest_values = deque(maxlen=LOOKBACK_SECONDS // FETCH_INTERVAL)
 open_interest_record = deque(maxlen=TABLE_RECORD_SIZE)
-baseline_futures_oi = None
+baseline_futures_oi = None  # Used to compute % change
 
-# Global variable for the Heikin Ashi line segments collection (plot)
+# Global variable for the Heikin Ashi line segments (cumulative imbalance plot)
 reg_collection = None
 
 # ---------------- Data Storage for Raw Order Book Plot ----------------
-# These deques hold the raw bid/ask data.
 times = deque()
 bids = deque()
 asks = deque()
@@ -79,7 +71,7 @@ def fetch_futures_open_interest():
 
 # ---------------- Update Data Function ----------------
 def update_data():
-    global baseline_futures_oi, ha_imbalance_open, ha_imbalance_close, ha_oi_open, ha_oi_close
+    global baseline_futures_oi, ha_imbalance_open, ha_imbalance_close
 
     now = datetime.now()
     # Update Order Book Data (for raw plot)
@@ -95,39 +87,29 @@ def update_data():
     
     # Calculate raw imbalance (%)
     total_vol = bid_vol + ask_vol
-    if total_vol > 0:
-        imbalance = ((bid_vol - ask_vol) / total_vol) * 100
-    else:
-        imbalance = 0
+    imbalance = ((bid_vol - ask_vol) / total_vol * 100) if total_vol > 0 else 0
 
     # --- Heikin Ashi Calculation for Cumulative Imbalance ---
-    # Treat each update as a degenerate candle (open, high, low, close all equal to imbalance)
     if ha_imbalance_open is None:
         ha_imbalance_open = imbalance
         ha_imbalance_close = imbalance
     else:
         ha_imbalance_open = (ha_imbalance_open + ha_imbalance_close) / 2
         ha_imbalance_close = imbalance
-    ha_value = (ha_imbalance_open + ha_imbalance_close) / 2  # Smoothed HA value
+    ha_value = (ha_imbalance_open + ha_imbalance_close) / 2
     ha_imbalance_values.append(ha_value)
     ha_imbalance_times.append(now)
     imbalance_record.append(ha_value)
     
-    # --- Extra Metric: Futures Open Interest (Heikin Ashi Calculation) ---
+    # --- Live Open Interest Data (No Smoothing) ---
     futures_oi = fetch_futures_open_interest()
     if futures_oi is not None:
         if baseline_futures_oi is None:
             baseline_futures_oi = futures_oi
+        # Calculate percentage change relative to the baseline
         change_oi = ((futures_oi - baseline_futures_oi) / baseline_futures_oi) * 100
-        if ha_oi_open is None:
-            ha_oi_open = change_oi
-            ha_oi_close = change_oi
-        else:
-            ha_oi_open = (ha_oi_open + ha_oi_close) / 2
-            ha_oi_close = change_oi
-        ha_oi_value = (ha_oi_open + ha_oi_close) / 2
-        open_interest_values.append(ha_oi_value)
-        open_interest_record.append(ha_oi_value)
+        open_interest_values.append(change_oi)
+        open_interest_record.append(change_oi)
     
     # Remove raw order book data older than the lookback window.
     cutoff = now - timedelta(seconds=LOOKBACK_SECONDS)
@@ -145,7 +127,6 @@ fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 7), sharex=True,
 # Top plot: Raw bid/ask chart.
 line_bid, = ax1.plot([], [], label="Best Bid", color="green", marker="o")
 line_ask, = ax1.plot([], [], label="Best Ask", color="red", marker="o")
-# The Heikin Ashi–smoothed cumulative imbalance will be drawn via a LineCollection.
 mid_line = ax1.axhline(0, color="black", linestyle="--", linewidth=2)
 
 ax1.set_ylabel("Cumulative Imbalance (%)")
@@ -155,10 +136,9 @@ ax1.set_ylim(-100, 100)
 
 def init():
     current_time = datetime.now()
-    # Stretch the x-axis 10% further than LOOKBACK_SECONDS
-    effective_lookback = LOOKBACK_SECONDS * 1.1
+    effective_lookback = LOOKBACK_SECONDS * 1.1  # stretch x-axis 10% further
     ax1.set_xlim(current_time - timedelta(seconds=effective_lookback), current_time)
-    ax2.axis('off')  # Hide table axis initially
+    ax2.axis('off')
     return line_bid, line_ask, mid_line
 
 def animate(frame):
@@ -168,7 +148,7 @@ def animate(frame):
         return line_bid, line_ask, mid_line
 
     current_time = datetime.now()
-    effective_lookback = LOOKBACK_SECONDS * 1.1  # 10% more than the base lookback window
+    effective_lookback = LOOKBACK_SECONDS * 1.1
     ax1.set_xlim(current_time - timedelta(seconds=effective_lookback), current_time)
     
     # Update raw bid/ask chart.
@@ -200,29 +180,26 @@ def animate(frame):
     # ---- Update the Table ----
     ax2.clear()
     ax2.axis('off')
-    # Build table data with 2 columns:
-    # Column 1: Cumulative Imbalance (%) (2-digit precision)
-    # Column 2: Cumulative Open Interest (%) (4-digit precision)
     num_rows = len(imbalance_record)
     table_data = []
     for i in range(num_rows):
+        # Open interest is now formatted with 3 digits of precision after the decimal point.
         row = [
             f"{imbalance_record[i]:.2f}%",
-            f"{open_interest_record[i]:.4f}%" if i < len(open_interest_record) else ""
+            f"{open_interest_record[i]:.3f}%" if i < len(open_interest_record) else ""
         ]
         table_data.append(row)
     
-    col_labels = ["Cumulative Imbalance (%)", "Cumulative Open Interest (%)"]
-    
+    col_labels = ["Cumulative Imbalance (%)", "Open Interest (%)"]
     table = ax2.table(cellText=table_data, colLabels=col_labels,
                       loc='center', cellLoc='center')
     table.auto_set_font_size(False)
     table.set_fontsize(12)
-    table.scale(0.8, 1.5)  # Compact the table
+    table.scale(0.8, 1.5)
     
     # Color table text: green for positive, red for negative.
     for (row, col), cell in table.get_celld().items():
-        if row > 0:  # Skip header row
+        if row > 0:
             try:
                 value = float(cell.get_text().get_text().replace("%", ""))
             except Exception:
