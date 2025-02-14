@@ -1,6 +1,8 @@
 import requests
 import time
 import datetime
+import json
+import websocket
 
 # ======================================
 # Configuration – Replace with your data
@@ -8,14 +10,13 @@ import datetime
 TELEGRAM_BOT_TOKEN = "7721789198:AAFQbDqk7Ln5O-O3eGwYh05MZMCdVunfMHI"
 TELEGRAM_CHAT_ID = "7052327528"  # e.g., an integer or string
 
-# Binance Futures API base URL
+# Binance Futures API base URL (for REST calls)
 BINANCE_FUTURES_URL = "https://fapi.binance.com"
 
-# List of coins on Binance Futures to monitor.
-# Make sure the symbol names match Binance Futures (here assumed as USDT pairs)
+# List of coins on Binance Futures to monitor (MATICUSDT removed)
 COINS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-    "DOGEUSDT", "MATICUSDT", "SOLUSDT", "DOTUSDT", "LTCUSDT",
+    "DOGEUSDT", "SOLUSDT", "DOTUSDT", "LTCUSDT",
     "LINKUSDT", "AVAXUSDT", "ATOMUSDT", "XLMUSDT", "ALGOUSDT",
     "ICPUSDT", "ETCUSDT", "VETUSDT", "FILUSDT", "TRXUSDT",
     # Additional coins
@@ -30,20 +31,24 @@ COINS = [
     "LPTUSDT"    # LPT
 ]
 
-# Remove any duplicates if they occur
+# Remove duplicates if they occur
 COINS = list(dict.fromkeys(COINS))
 
-# This dict will store the last triggered candle's open_time for each coin.
-# This is used to ensure we only trigger one notification per 1-min candle.
-last_triggered_candle = {}
+# Global dictionary for real-time cumulative tracking.
+# For each symbol, we store:
+#   "baseline": the price from which cumulative change is measured,
+#   "direction": 1 (up), -1 (down), or 0 (no movement yet),
+#   "baseline_time": the HH:MM when the baseline was set.
+cumulative_data = {}
 
 # ======================================
-# Utility Functions
+# Utility Functions (REST-based)
 # ======================================
 
 def send_telegram_message(message: str):
     """
     Sends a message to your Telegram chat using the Bot API.
+    (Using plain text since Telegram does not support text coloring via HTML/Markdown.)
     """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     params = {
@@ -51,55 +56,39 @@ def send_telegram_message(message: str):
         "text": message
     }
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
     except Exception as e:
         print(f"Error sending Telegram message: {e}")
 
-def get_current_kline(symbol: str) -> dict:
+def send_message_in_chunks(message: str, max_len: int = 4096):
     """
-    Fetches the latest 1-minute kline for the symbol.
-    Returns a dictionary with:
-      - open_time (in milliseconds)
-      - open price (as float)
-      - current price (using the 'close' field which updates in real time)
-    If error occurs, returns None.
+    Splits a long message by newline and sends it in chunks so that
+    no single message exceeds Telegram's 4096-character limit.
     """
-    url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
-    params = {
-        "symbol": symbol,
-        "interval": "1m",
-        "limit": 1
-    }
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        kline = response.json()[0]
-        # kline format:
-        # [0] Open time, [1] Open, [2] High, [3] Low, [4] Close, [5] Volume, etc.
-        return {
-            "open_time": int(kline[0]),
-            "open": float(kline[1]),
-            "current": float(kline[4])
-        }
-    except Exception as e:
-        print(f"Error getting current kline for {symbol}: {e}")
-        return None
+    lines = message.split("\n")
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > max_len:
+            send_telegram_message(chunk)
+            chunk = line
+        else:
+            if chunk:
+                chunk += "\n" + line
+            else:
+                chunk = line
+    if chunk:
+        send_telegram_message(chunk)
 
 def get_historical_klines(symbol: str, start_time_ms: int) -> list:
     """
     Fetches historical 1-minute klines for the given symbol starting at start_time_ms.
-    For a 4-hour lookback, we fetch up to 240 candles.
+    For a 6-hour lookback, we fetch up to 360 candles.
     """
     url = f"{BINANCE_FUTURES_URL}/fapi/v1/klines"
-    params = {
-        "symbol": symbol,
-        "interval": "1m",
-        "startTime": start_time_ms,
-        "limit": 240  # roughly 4 hours of 1-min candles
-    }
+    params = {"symbol": symbol, "interval": "1m", "startTime": start_time_ms, "limit": 360}
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -108,90 +97,154 @@ def get_historical_klines(symbol: str, start_time_ms: int) -> list:
 
 def format_percentage_change(percent: float) -> str:
     """
-    Returns a formatted string with an emoji for the direction.
+    Returns the percentage change prefixed with:
+      - A green circle (🟢) if positive
+      - A red circle (🔴) if negative
     """
     if percent > 0:
-        return f"{percent:.2f}% 🟢"
+        return f"🟢{percent:.2f}%"
     else:
-        return f"{percent:.2f}% 🔴"
-
-# ======================================
-# Historical Summary Notification
-# ======================================
+        return f"🔴{percent:.2f}%"
 
 def send_historical_summaries():
     """
-    For each coin, look back over the past 4 hours (from when the script starts)
-    and check each 1-min candle for a price change of >= 1% (from open to close).
-    If found, send a one-time summary message per coin to Telegram.
+    Processes the past 6 hours of historical data for each coin.
+    An event is recorded only if:
+      - The cumulative change from the baseline (starting with the first candle's open) is >= 0.5%
+      - AND the time difference between the current candle and the baseline is 60 minutes or less.
+    If the duration exceeds 60 minutes, the baseline is reset without recording an event.
+    Finally, coins are sorted (most events first) and an aggregated Telegram message is sent.
     """
+    threshold = 0.5  # 0.5% threshold for historical events
+    max_duration = 60 * 60 * 1000  # 60 minutes in milliseconds
     now_ms = int(time.time() * 1000)
-    four_hours_ago_ms = now_ms - (4 * 3600 * 1000)
+    six_hours_ago_ms = now_ms - (6 * 3600 * 1000)
+    summary_list = []
+
     for symbol in COINS:
-        klines = get_historical_klines(symbol, four_hours_ago_ms)
-        # List to store events as strings.
+        klines = get_historical_klines(symbol, six_hours_ago_ms)
+        if not klines:
+            print(f"No historical data for {symbol}")
+            continue
+
         events = []
+        baseline_price = float(klines[0][1])
+        baseline_time = int(klines[0][0])
         for k in klines:
-            open_time = int(k[0])
-            open_price = float(k[1])
-            close_price = float(k[4])
-            # Calculate percentage change for that candle.
-            if open_price == 0:
+            candle_time = int(k[0])
+            candle_close = float(k[4])
+            # If the time span exceeds 60 minutes, reset the baseline without recording.
+            if (candle_time - baseline_time) > max_duration:
+                baseline_price = candle_close
+                baseline_time = candle_time
                 continue
-            percent_change = ((close_price - open_price) / open_price) * 100
-            if abs(percent_change) >= 1:
-                # Convert open time to human-readable format (HH:MM)
-                time_str = datetime.datetime.fromtimestamp(open_time/1000).strftime("%H:%M")
-                if percent_change > 0:
-                    event_str = f"+{percent_change:.2f}% at {time_str}"
-                else:
-                    event_str = f"{percent_change:.2f}% at {time_str}"
+            cumulative_change = ((candle_close - baseline_price) / baseline_price) * 100
+            if abs(cumulative_change) >= threshold:
+                start_str = datetime.datetime.fromtimestamp(baseline_time / 1000).strftime("%H:%M")
+                end_str = datetime.datetime.fromtimestamp(candle_time / 1000).strftime("%H:%M")
+                formatted_change = format_percentage_change(cumulative_change)
+                event_str = f"{start_str}-{end_str}: {formatted_change}"
                 events.append(event_str)
+                baseline_price = candle_close
+                baseline_time = candle_time
+
         if events:
-            message = f"Historical summary for {symbol} (past 4h): " + ", ".join(events)
-            print("Sending historical summary:", message)
-            send_telegram_message(message)
-        else:
-            print(f"No historical events for {symbol} in the past 4 hours.")
+            summary_list.append((symbol, events))
+
+    summary_list.sort(key=lambda x: len(x[1]), reverse=True)
+
+    if summary_list:
+        aggregated_parts = []
+        for (symbol, events) in summary_list:
+            symbol_name = symbol.replace("USDT", "")
+            header = f"HS {symbol_name}"
+            coin_message = header + "\n" + "\n".join(events)
+            aggregated_parts.append(coin_message)
+        aggregated_message = "\n\n".join(aggregated_parts)
+        print("Sending aggregated historical summary:\n", aggregated_message)
+        send_message_in_chunks(aggregated_message)
+    else:
+        print("No significant historical events in the past 6 hours.")
 
 # ======================================
-# Real-Time Monitoring (1-min candles)
+# Real-Time Monitoring via WebSocket
 # ======================================
 
-def real_time_monitor():
+def on_message(ws, message):
     """
-    Continuously monitors the current 1-min candle for each coin.
-    If the price (compared to the candle's open) moves by ≥ 0.5% (in either direction)
-    in real time—and if a trigger for that candle hasn't already been sent—then a trigger
-    notification is sent. The trigger is allowed to repeat if a new candle meets the criteria.
+    Processes each WebSocket message containing kline data.
+    It calculates the cumulative percentage change from the stored baseline.
+    When the absolute change reaches or exceeds 0.5%, it sends a real-time notification.
+    The notification includes both the start (baseline) time and the current time.
+    Format:
+      Line 1: "<Symbol> - <start_time> to <end_time>" (with "USDT" removed)
+      Line 2: "<change>%"
+    After sending, the baseline (and its time) is updated.
     """
-    global last_triggered_candle
-    print("Starting real-time monitoring...")
+    try:
+        data = json.loads(message)
+        if "data" in data and data["data"].get("e") == "kline":
+            kline_data = data["data"]["k"]
+            symbol = data["data"]["s"]
+            current_price = float(kline_data["c"])
+            
+            if symbol not in cumulative_data:
+                cumulative_data[symbol] = {
+                    "baseline": current_price,
+                    "direction": 0,
+                    "baseline_time": datetime.datetime.now().strftime("%H:%M")
+                }
+            
+            baseline = cumulative_data[symbol]["baseline"]
+            last_direction = cumulative_data[symbol]["direction"]
+            new_direction = 1 if current_price > baseline else (-1 if current_price < baseline else 0)
+            
+            if last_direction != 0 and new_direction != last_direction:
+                cumulative_data[symbol]["baseline"] = current_price
+                cumulative_data[symbol]["direction"] = new_direction
+                cumulative_data[symbol]["baseline_time"] = datetime.datetime.now().strftime("%H:%M")
+            else:
+                cumulative_percent = ((current_price - baseline) / baseline) * 100
+                if abs(cumulative_percent) >= 0.5:
+                    start_time = cumulative_data[symbol]["baseline_time"]
+                    end_time = datetime.datetime.now().strftime("%H:%M")
+                    symbol_name = symbol.replace("USDT", "")
+                    message_text = f"{symbol_name} - {start_time} to {end_time}\n{format_percentage_change(cumulative_percent)}"
+                    print("Sending trigger notification:", message_text)
+                    send_telegram_message(message_text)
+                    cumulative_data[symbol]["baseline"] = current_price
+                    cumulative_data[symbol]["direction"] = new_direction
+                    cumulative_data[symbol]["baseline_time"] = datetime.datetime.now().strftime("%H:%M")
+    except Exception as e:
+        print("Error in on_message:", e)
+
+def on_error(ws, error):
+    print("WebSocket error:", error)
+
+def on_close(ws, close_status_code, close_msg):
+    print("WebSocket closed:", close_status_code, close_msg)
+
+def on_open(ws):
+    print("WebSocket connection opened.")
+
+def run_websocket():
+    """
+    Constructs the combined WebSocket URL for all coin 1-minute kline streams and runs the connection.
+    If disconnected, it attempts to reconnect after 5 seconds.
+    """
+    streams = "/".join([coin.lower() + "@kline_1m" for coin in COINS])
+    ws_url = f"wss://fstream.binance.com/stream?streams={streams}"
+    ws = websocket.WebSocketApp(ws_url,
+                                on_message=on_message,
+                                on_error=on_error,
+                                on_close=on_close,
+                                on_open=on_open)
     while True:
-        for symbol in COINS:
-            kline = get_current_kline(symbol)
-            if kline is None:
-                continue
-
-            open_time = kline["open_time"]
-            open_price = kline["open"]
-            current_price = kline["current"]
-
-            # Calculate the percent change relative to the candle's open
-            if open_price == 0:
-                continue
-            percent_change = ((current_price - open_price) / open_price) * 100
-
-            # Check if this candle has already triggered a notification
-            last_trigger = last_triggered_candle.get(symbol)
-            # Trigger if change exceeds 0.5% and notification hasn't been sent for this candle
-            if last_trigger != open_time and abs(percent_change) >= 0.5:
-                time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                message = f"{time_str} - {symbol}: {format_percentage_change(percent_change)} (current candle)"
-                print("Sending trigger notification:", message)
-                send_telegram_message(message)
-                last_triggered_candle[symbol] = open_time
-        # Poll every 5 seconds (adjust as needed)
+        try:
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as e:
+            print("WebSocket run_forever exception:", e)
+        print("Reconnecting in 5 seconds...")
         time.sleep(5)
 
 # ======================================
@@ -200,10 +253,9 @@ def real_time_monitor():
 
 if __name__ == "__main__":
     try:
-        # First, send one-time historical summary notifications per coin.
         print("Sending historical summary notifications...")
         send_historical_summaries()
-        # Then, start the real-time monitoring.
-        real_time_monitor()
+        print("Starting real-time monitoring via WebSocket...")
+        run_websocket()
     except KeyboardInterrupt:
         print("Monitoring stopped by user.")
