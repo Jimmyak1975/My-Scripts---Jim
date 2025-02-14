@@ -9,6 +9,15 @@ ORDERBOOK_API_URL = "https://fapi.binance.com/fapi/v1/depth"
 FETCH_INTERVAL = 0.5  # Fetch data every 0.5 seconds
 TABLE_SIZE = 100  # Number of rows to display
 
+# Colors for alternating rows (base dark theme)
+BASE_COLOR_EVEN = "#2E2E2E"  # Dark gray
+BASE_COLOR_ODD = "#1E1E1E"   # Almost black
+
+# Highlight colors
+HIGHLIGHT_YELLOW = "yellow"      # Bright yellow for >100,000
+HIGHLIGHT_BLUE = "dodgerblue"    # Bright blue for >300,000
+HIGHLIGHT_ORANGE = "orange"      # Bright orange for >500,000
+
 # ---------------- Fetch Order Book Data ----------------
 def fetch_order_book():
     """Fetch the current order book from Binance Futures."""
@@ -50,46 +59,59 @@ def update(frame):
     ax.clear()
     ax.axis('off')
 
-    # Create the table with tighter row spacing
+    # Create the table; note that row 0 will be header
     table = ax.table(cellText=table_data, colLabels=col_labels, loc='center', cellLoc='center')
 
-    # Formatting table
+    # Formatting table: fixed font size and scale for compact fit
     table.auto_set_font_size(False)
-    table.set_fontsize(9)  # Adjust font size for compact fit
-    table.scale(0.85, 0.85)  # Reduce row height and width for tighter fit
+    table.set_fontsize(9)
+    table.scale(0.85, 0.85)
 
-    # Apply thinner lines for a cleaner look
+    # Apply thin borders to cells
     for key, cell in table.get_celld().items():
-        cell.set_linewidth(0.2)  # Very thin table borders
+        cell.set_linewidth(0.2)
 
-    # Color formatting for bids (green) and asks (red) + bold numbers + highlight rules
+    # Set default dark background for each non-header cell with alternating colors
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            # Style header cells
+            cell.set_facecolor("#404040")
+            cell.set_text_props(weight='bold', color="white")
+        else:
+            base_color = BASE_COLOR_EVEN if row % 2 == 0 else BASE_COLOR_ODD
+            cell.set_facecolor(base_color)
+
+    # Iterate over data rows to set text colors and apply highlights if thresholds are met
     for i in range(1, TABLE_SIZE + 1):
         cell_ask = table[i, 0]
         cell_bid = table[i, 1]
 
-        # Get values as numbers
+        # Convert values back to integers (or 0) for highlighting logic
         try:
             ask_val = int(asks[i - 1]) if asks[i - 1] > 0 else 0
             bid_val = int(bids[i - 1]) if bids[i - 1] > 0 else 0
-        except:
+        except Exception as e:
             ask_val, bid_val = 0, 0
 
-        # Color for ASK (Red)
-        cell_ask.set_text_props(color="red", fontweight='bold')
+        # Set number colors: ask in red, bid in green
+        cell_ask.set_text_props(color="red", weight='bold')
+        cell_bid.set_text_props(color="green", weight='bold')
 
-        # Color for BID (Green)
-        cell_bid.set_text_props(color="green", fontweight='bold')
-
-        # Highlighting Logic:
-        if ask_val > 300000:
-            cell_ask.set_facecolor("lightblue")  # 🔵 Highlight in blue
+        # Highlighting logic for ASK side
+        if ask_val > 500000:
+            cell_ask.set_facecolor(HIGHLIGHT_ORANGE)
+        elif ask_val > 300000:
+            cell_ask.set_facecolor(HIGHLIGHT_BLUE)
         elif ask_val > 100000:
-            cell_ask.set_facecolor("yellow")  # 🟡 Highlight in yellow
+            cell_ask.set_facecolor(HIGHLIGHT_YELLOW)
 
-        if bid_val > 300000:
-            cell_bid.set_facecolor("lightblue")  # 🔵 Highlight in blue
+        # Highlighting logic for BID side
+        if bid_val > 500000:
+            cell_bid.set_facecolor(HIGHLIGHT_ORANGE)
+        elif bid_val > 300000:
+            cell_bid.set_facecolor(HIGHLIGHT_BLUE)
         elif bid_val > 100000:
-            cell_bid.set_facecolor("yellow")  # 🟡 Highlight in yellow
+            cell_bid.set_facecolor(HIGHLIGHT_YELLOW)
 
 ani = animation.FuncAnimation(fig, update, interval=FETCH_INTERVAL * 1000, cache_frame_data=False)
 
