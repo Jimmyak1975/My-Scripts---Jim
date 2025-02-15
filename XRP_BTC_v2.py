@@ -101,12 +101,12 @@ def send_historical_summaries():
     """
     Processes the past 6 hours of historical data for each coin.
     An event is recorded only if:
-      - The cumulative change from the baseline (starting with the first candle's open) is >= 0.5%
+      - The cumulative change from the baseline (starting with the first candle's open) is >= 0.8%
       - AND the time difference between the current candle and the baseline is 60 minutes or less.
     If the duration exceeds 60 minutes, the baseline is reset without recording an event.
     Finally, coins are sorted (most events first) and an aggregated Telegram message is sent.
     """
-    threshold = 1.0  # 0.5% threshold for historical events
+    threshold = 0.8  # 0.8% threshold for historical events
     max_duration = 60 * 60 * 1000  # 60 minutes in milliseconds
     now_ms = int(time.time() * 1000)
     six_hours_ago_ms = now_ms - (6 * 3600 * 1000)
@@ -165,7 +165,7 @@ def on_message(ws, message):
     """
     Processes each WebSocket message containing kline data.
     It calculates the cumulative percentage change from the stored baseline.
-    When the absolute change reaches or exceeds 0.5%, it sends a real-time notification.
+    When the absolute change reaches or exceeds 0.8%, it sends a real-time notification.
     The notification includes both the start (baseline) time and the current time.
     Format:
       Line 1: "<Symbol> - <start_time> to <end_time>" (with "USDT" removed)
@@ -209,7 +209,7 @@ def on_message(ws, message):
                 cumulative_data[symbol]["baseline_timestamp"] = time.time()
             else:
                 cumulative_percent = ((current_price - baseline) / baseline) * 100
-                if abs(cumulative_percent) >= 0.5:
+                if abs(cumulative_percent) >= 0.8:
                     now_ts = time.time()
                     # Check cooldown: 10 minutes (600 seconds) must have passed since last notification.
                     if now_ts - cumulative_data[symbol]["last_notif_timestamp"] < 600:
