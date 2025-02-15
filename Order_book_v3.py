@@ -14,20 +14,33 @@ BASE_COLOR_EVEN = "#2E2E2E"  # Dark gray
 BASE_COLOR_ODD = "#1E1E1E"   # Almost black
 
 # Highlight colors
-HIGHLIGHT_YELLOW = "yellow"      # Bright yellow for >100,000
-HIGHLIGHT_BLUE = "dodgerblue"    # Bright blue for >300,000
-HIGHLIGHT_ORANGE = "orange"      # Bright orange for >500,000
+HIGHLIGHT_YELLOW = "yellow"      # For >100,000
+HIGHLIGHT_BLUE = "dodgerblue"    # For >300,000
+HIGHLIGHT_ORANGE = "orange"      # For >500,000
 
 # ---------------- Fetch Order Book Data ----------------
 def fetch_order_book():
-    """Fetch the current order book from Binance Futures."""
+    """Fetch the current order book from Binance Futures and compute cumulative volumes."""
     try:
         params = {"symbol": SYMBOL, "limit": TABLE_SIZE}
         response = requests.get(ORDERBOOK_API_URL, params=params, timeout=5)
         data = response.json()
 
-        bids = [float(size) * float(price) for price, size in data["bids"]]
-        asks = [float(size) * float(price) for price, size in data["asks"]]
+        # Calculate cumulative volumes for bids (from highest bid downward)
+        bids = []
+        cum_bid = 0.0
+        for price, size in data["bids"]:
+            row_value = float(price) * float(size)
+            cum_bid += row_value
+            bids.append(cum_bid)
+
+        # Calculate cumulative volumes for asks (from lowest ask upward)
+        asks = []
+        cum_ask = 0.0
+        for price, size in data["asks"]:
+            row_value = float(price) * float(size)
+            cum_ask += row_value
+            asks.append(cum_ask)
 
         return bids, asks
     except Exception as e:
@@ -36,7 +49,7 @@ def fetch_order_book():
 
 # ---------------- Plot Setup ----------------
 fig, ax = plt.subplots(figsize=(4, 12))  # Compact size
-plt.get_current_fig_manager().set_window_title(SYMBOL)  # Set window title to coin name
+plt.get_current_fig_manager().set_window_title(SYMBOL)  # Set window title to the coin symbol
 ax.axis('off')  # Hide axes
 
 def update(frame):
@@ -55,15 +68,15 @@ def update(frame):
         table_data.append([ask_value, bid_value])
 
     # Table headers
-    col_labels = ["ASK", "BID"]
+    col_labels = ["ASK (Cumulative)", "BID (Cumulative)"]
 
     ax.clear()
     ax.axis('off')
 
-    # Create the table; note that row 0 will be header
+    # Create the table; row 0 is the header
     table = ax.table(cellText=table_data, colLabels=col_labels, loc='center', cellLoc='center')
 
-    # Formatting table: fixed font size and scale for compact fit
+    # Set font size and scale for a compact display
     table.auto_set_font_size(False)
     table.set_fontsize(9)
     table.scale(0.85, 0.85)
@@ -72,10 +85,9 @@ def update(frame):
     for key, cell in table.get_celld().items():
         cell.set_linewidth(0.2)
 
-    # Set default dark background for each non-header cell with alternating colors
+    # Set dark background for non-header cells with alternating colors
     for (row, col), cell in table.get_celld().items():
         if row == 0:
-            # Style header cells
             cell.set_facecolor("#404040")
             cell.set_text_props(weight='bold', color="white")
         else:
@@ -87,14 +99,13 @@ def update(frame):
         cell_ask = table[i, 0]
         cell_bid = table[i, 1]
 
-        # Convert values back to integers (or 0) for highlighting logic
         try:
             ask_val = int(asks[i - 1]) if asks[i - 1] > 0 else 0
             bid_val = int(bids[i - 1]) if bids[i - 1] > 0 else 0
         except Exception as e:
             ask_val, bid_val = 0, 0
 
-        # Set number colors: ask in red, bid in green
+        # Set text colors: ask in red, bid in green
         cell_ask.set_text_props(color="red", weight='bold')
         cell_bid.set_text_props(color="green", weight='bold')
 
