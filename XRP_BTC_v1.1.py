@@ -233,7 +233,7 @@ def run_websocket(max_runtime=3600):
     print("WebSocket thread closed. Exiting run_websocket.")
 
 # ======================================
-# Script Entry Point with Auto-Restart Every Hour
+# Script Entry Point with Auto-Restart Every 4 Hours
 # ======================================
 
 if __name__ == "__main__":
@@ -241,8 +241,8 @@ if __name__ == "__main__":
         print("Sending historical summary notifications...")
         send_historical_summaries()
         print("Starting real-time monitoring via WebSocket...")
-        run_websocket(max_runtime=3600)  # Run for 1 hour
-        print("One hour elapsed. Restarting the script...")
+        run_websocket(max_runtime=14400)  # Run for 4 hours
+        print("Four hours elapsed. Restarting the script...")
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except KeyboardInterrupt:
         print("Monitoring stopped by user.")
