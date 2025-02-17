@@ -19,8 +19,8 @@ BINANCE_FUTURES_URL = "https://fapi.binance.com"
 # List of coins on Binance Futures to monitor (MATICUSDT removed)
 COINS = [
     "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-    "DOGEUSDT", "SOLUSDT", "DOTUSDT", "LTCUSDT",
-    "SUIUSDT", "TRXUSDT", "XLMUSDT", "HBARUSDT", "AVAXUSDT"
+    "DOGEUSDT", "SOLUSDT", "LINKUSDT", "LTCUSDT",
+    "SUIUSDT", "TRXUSDT", "XLMUSDT", "HBARUSDT", "AVAXUSDT", "AAVEUSDT", "1000PEPEUSDT"
 ]
 
 # Remove duplicates if they occur
