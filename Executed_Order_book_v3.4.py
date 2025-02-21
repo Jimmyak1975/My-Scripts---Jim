@@ -4,7 +4,7 @@ import matplotlib.animation as animation
 import concurrent.futures
 
 # ---------------- Configuration ----------------
-SYMBOL = "LTCUSDT"         # Litecoin vs USDT pair
+SYMBOL = "SUIUSDT"         # Litecoin vs USDT pair
 FETCH_INTERVAL = 2         # Fetch every 2 seconds (faster updates)
 TABLE_SIZE = 50            # Display the top 50 trades per side
 TOTAL_FETCH_LIMIT = 1000   # Number of trades to fetch for computing totals
@@ -13,7 +13,7 @@ VOLUME_THRESHOLD = 10      # Filter trades > 10 LTC
 # API endpoints
 EXCHANGES = {
     "Binance": "https://fapi.binance.com/fapi/v1/aggTrades",
-    "Coinbase": "https://api.pro.coinbase.com/products/LTC-USD/trades",
+    "Coinbase": "https://api.exchange.coinbase.com/products/LTC-USD/trades",
     "Kraken": "https://api.kraken.com/0/public/Trades?pair=LTCUSD"
 }
 
@@ -24,7 +24,7 @@ BASE_COLOR_ODD = "#1E1E1E"
 HIGHLIGHT_YELLOW = "yellow"  # > $50,000
 HIGHLIGHT_ORANGE = "orange"  # > $100,000
 HIGHLIGHT_BLUE = "blue"      # > $200,000
-HIGHLIGHT_RED = "red"        # > $500,000
+HIGHLIGHT_RED = "purple"     # > $500,000  <-- Changed to purple
 
 # ---------------- Fetch Trades ----------------
 def fetch_exchange_trades(exchange, url):
@@ -42,6 +42,9 @@ def fetch_exchange_trades(exchange, url):
                     trades.append({"exchange": exchange, "value": value, "is_sell": is_sell})
         elif exchange == "Coinbase":
             response = requests.get(url, params={"limit": TOTAL_FETCH_LIMIT}, timeout=10).json()
+            if not isinstance(response, list):
+                print(f"Coinbase API error: {response}")
+                return trades
             for trade in response:
                 price = float(trade["price"])
                 qty = float(trade["size"])
