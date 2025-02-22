@@ -68,7 +68,10 @@ def get_historical_klines(symbol: str, start_time_ms: int) -> list:
         print(f"Error getting historical klines for {symbol}: {e}")
         return []
 
-def format_percentage_change(percent: float) -> str:
+def format_percentage_change(percent: float, symbol: str = None) -> str:
+    # Use yellow for BTCUSDT regardless of direction
+    if symbol == "BTCUSDT":
+        return f"🟡{percent:.2f}%"
     if percent > 0:
         return f"🟢{percent:.2f}%"
     else:
@@ -109,7 +112,7 @@ def send_historical_summaries():
             if abs(cumulative_change) >= threshold:
                 start_str = datetime.datetime.fromtimestamp(baseline_time / 1000).strftime("%H:%M")
                 end_str = datetime.datetime.fromtimestamp(candle_time / 1000).strftime("%H:%M")
-                formatted_change = format_percentage_change(cumulative_change)
+                formatted_change = format_percentage_change(cumulative_change, symbol)
                 event_str = f"{start_str}-{end_str}: {formatted_change}"
                 events.append(event_str)
                 baseline_price = candle_close
@@ -141,9 +144,9 @@ def on_message(ws, message):
     """
     Processes each WebSocket message containing kline data.
     It calculates the cumulative percentage change from the stored baseline.
-    When the absolute change reaches or exceeds 0.8%, it sends a real-time notification.
-    The notification includes both the start (baseline) time and the current time.
-    A cooldown of 10 minutes is enforced for each coin before sending a new alert.
+    When the absolute change reaches or exceeds the threshold (0.1% for BTCUSDT, 0.8% for others),
+    it sends a real-time notification. The notification includes both the start (baseline) time
+    and the current time. A cooldown of 10 minutes is enforced for each coin before sending a new alert.
     """
     global btc_current
     try:
@@ -184,14 +187,16 @@ def on_message(ws, message):
                     return
 
                 cumulative_percent = ((current_price - baseline) / baseline) * 100
-                if abs(cumulative_percent) >= 0.8:  # 0.8% threshold for real-time alerts
+                # Set a different threshold for BTCUSDT vs. other coins
+                threshold = 0.1 if symbol == "BTCUSDT" else 0.8
+                if abs(cumulative_percent) >= threshold:
                     if now_ts - cumulative_data[symbol]["last_notif_timestamp"] < 600:
                         return
                     
                     start_time = cumulative_data[symbol]["baseline_time"]
                     end_time = datetime.datetime.now().strftime("%H:%M")
                     symbol_name = symbol.replace("USDT", "")
-                    message_text = f"{symbol_name} - {start_time} to {end_time}\n{format_percentage_change(cumulative_percent)}"
+                    message_text = f"{symbol_name} - {start_time} to {end_time}\n{format_percentage_change(cumulative_percent, symbol)}"
                     
                     time_diff = now_ts - cumulative_data[symbol]["baseline_timestamp"]
                     if (symbol != "BTCUSDT" and cumulative_percent > 0 and
